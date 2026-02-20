@@ -316,7 +316,7 @@ async function fetchRows(limit) {
         yesterdays_diamonds_num,
         yesterdays_duration_hours_num,
         yesterday_valid_day_bool
-      FROM v_respond_sync_users_plus_yesterday
+      FROM v_respond_sync_users_plus_yesterday_fixed
       ORDER BY user_id
       LIMIT $1
     `;
@@ -510,9 +510,9 @@ async function runSyncOnce() {
 }
 
 function runMode() {
-  const m = s(envOptional("RUN_MODE", "once")).toLowerCase();
-  if (m === "server") return "server";
-  return "once";
+  const m = s(envOptional("RUN_MODE", "server")).toLowerCase();
+  if (m === "once") return "once";
+  return "server";
 }
 
 async function mainOnceAndExit() {
