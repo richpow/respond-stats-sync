@@ -1,0 +1,15 @@
+{
+  "name": "respond-stats-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.12.0"
+  },
+  "scripts": {
+    "start": "node worker.js"
+  }
+}
