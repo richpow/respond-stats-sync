@@ -110,9 +110,8 @@ function toDayMonth(v) {
   if (!v) return "";
 
   let d;
-  if (v instanceof Date) {
-    d = v;
-  } else {
+  if (v instanceof Date) d = v;
+  else {
     const txt = typeof v === "string" ? v.trim() : "";
     if (!txt) return "";
     d = new Date(txt);
