@@ -1,4 +1,5 @@
 import pg from "pg";
+import express from "express";
 
 const { Pool } = pg;
 
@@ -358,140 +359,204 @@ function dedupeByPhone(rows) {
   return out;
 }
 
-async function main() {
-  log("BOOT worker start");
+let isRunning = false;
+let lastRunAt = "";
+let lastSummary = { phones: 0, ok: 0, fail: 0 };
 
-  const token = envRequired("RESPOND_IO_TOKEN");
-  const limit = Number(envOptional("SYNC_LIMIT", "100000"));
-  const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "900"));
+async function runSyncOnce() {
+  if (isRunning) {
+    return { ok: false, status: "already_running", lastRunAt, lastSummary };
+  }
 
-  const allTierTags = tierUniverse();
+  isRunning = true;
+  const startedAt = nowIso();
+  lastRunAt = startedAt;
 
-  const rows = await fetchRows(limit);
-  const work = dedupeByPhone(rows);
+  try {
+    log("BOOT worker start");
 
-  let ok = 0;
-  let fail = 0;
+    const token = envRequired("RESPOND_IO_TOKEN");
+    const limit = Number(envOptional("SYNC_LIMIT", "100000"));
+    const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "900"));
 
-  for (const item of work) {
-    const r = item.row;
-    const userId = r.user_id;
-    const phone = item.phone;
+    const allTierTags = tierUniverse();
 
-    try {
-      if (item.action === "delete") {
-        const del = await respondDeleteContact(token, phone);
-        const treatMissingOk = del.status === 400 || del.status === 404;
+    const rows = await fetchRows(limit);
+    const work = dedupeByPhone(rows);
 
-        if (!del.ok && !treatMissingOk) {
-          throw new Error("Delete contact failed HTTP " + del.status + " " + del.text);
+    let ok = 0;
+    let fail = 0;
+
+    for (const item of work) {
+      const r = item.row;
+      const userId = r.user_id;
+      const phone = item.phone;
+
+      try {
+        if (item.action === "delete") {
+          const del = await respondDeleteContact(token, phone);
+          const treatMissingOk = del.status === 400 || del.status === 404;
+
+          if (!del.ok && !treatMissingOk) {
+            throw new Error("Delete contact failed HTTP " + del.status + " " + del.text);
+          }
+
+          ok += 1;
+          log("OK delete", phone);
+          await sleepMs(paceMs);
+          continue;
+        }
+
+        const tiktok = normalizeText(r.tiktok_username);
+        const realFirst = normalizeText(r.real_first_name);
+        const roleTag = normalizeText(r.role_tag);
+        const tierTag = normalizeText(r.tier_tag) || "Tier 1";
+        const lifecycle = normalizeText(r.lifecycle);
+
+        const groupValue = extractInsideParens(normalizeText(r.group_raw));
+        const managerValue = emailLocalPart(normalizeText(r.manager_raw));
+
+        const diamondsMtdRaw = Number(r.diamonds_mtd);
+        const diamondsMtd = formatNumber(r.diamonds_mtd);
+        const validDaysMtd = formatNumber(r.valid_days_mtd);
+        const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
+        const statsAsOf = toDayMonth(r.stats_as_of);
+
+        const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
+        const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
+        const yValid = r.yesterday_valid_day_bool ? "Yes" : "No";
+
+        const prevTierRank = tierRankFromTierTag(tierTag);
+        const currentMonthTierRank = tierRankFromDiamonds(diamondsMtdRaw);
+        const tierStatus = tierStatusFromRanks(prevTierRank, currentMonthTierRank);
+
+        const firstName = tiktok ? tiktok : "user_" + String(userId);
+
+        const customFields = [
+          { name: "tiktok_username", value: tiktok || null },
+          { name: "real_first_name", value: realFirst || null },
+          { name: "group", value: groupValue || null },
+          { name: "manager", value: managerValue || null },
+          { name: "tier", value: tierTag || null },
+          { name: "tier_status", value: tierStatus },
+          { name: "diamonds_mtd", value: diamondsMtd },
+          { name: "valid_days_mtd", value: validDaysMtd },
+          { name: "live_duration_mtd", value: liveDurationMtd },
+          { name: "stats_as_of", value: statsAsOf || null },
+          { name: "agency_status", value: "in_agency" },
+
+          { name: "yesterdays_diamonds", value: yDiamonds },
+          { name: "yesterdays_duration", value: yDuration },
+          { name: "yesterday_valid_day", value: yValid }
+        ];
+
+        const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
+        if (!cu.ok) {
+          throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
+        }
+
+        const roleLegacy = ["role_creator", "role_manager"];
+        const roleCanon = ["Creator", "Manager"];
+        const roleDelete = uniq(roleLegacy.concat(roleCanon));
+
+        const dr = await respondDeleteTags(token, phone, roleDelete);
+        if (!dr.ok) {
+          throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
+        }
+
+        if (roleTag) {
+          const ar = await respondAddTags(token, phone, [roleTag]);
+          if (!ar.ok) {
+            throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
+          }
+        }
+
+        if (allTierTags.length > 0) {
+          const dt = await respondDeleteTags(token, phone, allTierTags);
+          if (!dt.ok) {
+            throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
+          }
+
+          if (tierTag) {
+            const at = await respondAddTags(token, phone, [tierTag]);
+            if (!at.ok) {
+              throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
+            }
+          }
+        }
+
+        const lc = await respondUpdateLifecycle(token, phone, lifecycle);
+        if (!lc.ok) {
+          throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
         }
 
         ok += 1;
-        log("OK delete", phone);
-        await sleepMs(paceMs);
-        continue;
+        log("OK sync", phone, "tier=" + tierTag, "tier_status=" + tierStatus, "lifecycle=" + (lifecycle || ""));
+      } catch (e) {
+        fail += 1;
+        log("FAIL", "user_id=" + userId, "phone=" + phone, "err=" + String(e && e.message ? e.message : e));
       }
 
-      const tiktok = normalizeText(r.tiktok_username);
-      const realFirst = normalizeText(r.real_first_name);
-      const roleTag = normalizeText(r.role_tag);
-      const tierTag = normalizeText(r.tier_tag) || "Tier 1";
-      const lifecycle = normalizeText(r.lifecycle);
-
-      const groupValue = extractInsideParens(normalizeText(r.group_raw));
-      const managerValue = emailLocalPart(normalizeText(r.manager_raw));
-
-      const diamondsMtdRaw = Number(r.diamonds_mtd);
-      const diamondsMtd = formatNumber(r.diamonds_mtd);
-      const validDaysMtd = formatNumber(r.valid_days_mtd);
-      const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
-      const statsAsOf = toDayMonth(r.stats_as_of);
-
-      const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
-      const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
-      const yValid = r.yesterday_valid_day_bool ? "Yes" : "No";
-
-      const prevTierRank = tierRankFromTierTag(tierTag);
-      const currentMonthTierRank = tierRankFromDiamonds(diamondsMtdRaw);
-      const tierStatus = tierStatusFromRanks(prevTierRank, currentMonthTierRank);
-
-      const firstName = tiktok ? tiktok : "user_" + String(userId);
-
-      const customFields = [
-        { name: "tiktok_username", value: tiktok || null },
-        { name: "real_first_name", value: realFirst || null },
-        { name: "group", value: groupValue || null },
-        { name: "manager", value: managerValue || null },
-        { name: "tier", value: tierTag || null },
-        { name: "tier_status", value: tierStatus },
-        { name: "diamonds_mtd", value: diamondsMtd },
-        { name: "valid_days_mtd", value: validDaysMtd },
-        { name: "live_duration_mtd", value: liveDurationMtd },
-        { name: "stats_as_of", value: statsAsOf || null },
-        { name: "agency_status", value: "in_agency" },
-
-        { name: "yesterdays_diamonds", value: yDiamonds },
-        { name: "yesterdays_duration", value: yDuration },
-        { name: "yesterday_valid_day", value: yValid }
-      ];
-
-      const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
-      if (!cu.ok) {
-        throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
-      }
-
-      const roleLegacy = ["role_creator", "role_manager"];
-      const roleCanon = ["Creator", "Manager"];
-      const roleDelete = uniq(roleLegacy.concat(roleCanon));
-
-      const dr = await respondDeleteTags(token, phone, roleDelete);
-      if (!dr.ok) {
-        throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
-      }
-
-      if (roleTag) {
-        const ar = await respondAddTags(token, phone, [roleTag]);
-        if (!ar.ok) {
-          throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
-        }
-      }
-
-      if (allTierTags.length > 0) {
-        const dt = await respondDeleteTags(token, phone, allTierTags);
-        if (!dt.ok) {
-          throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
-        }
-
-        if (tierTag) {
-          const at = await respondAddTags(token, phone, [tierTag]);
-          if (!at.ok) {
-            throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
-          }
-        }
-      }
-
-      const lc = await respondUpdateLifecycle(token, phone, lifecycle);
-      if (!lc.ok) {
-        throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
-      }
-
-      ok += 1;
-      log("OK sync", phone, "tier=" + tierTag, "tier_status=" + tierStatus, "lifecycle=" + (lifecycle || ""));
-    } catch (e) {
-      fail += 1;
-      log("FAIL", "user_id=" + userId, "phone=" + phone, "err=" + String(e && e.message ? e.message : e));
+      await sleepMs(paceMs);
     }
 
-    await sleepMs(paceMs);
-  }
+    lastSummary = { phones: work.length, ok, fail };
+    log("Summary", "phones=" + work.length, "ok=" + ok, "fail=" + fail);
 
-  log("Summary", "phones=" + work.length, "ok=" + ok, "fail=" + fail);
-  await pool.end();
-  log("Worker completed");
+    return { ok: true, status: "completed", startedAt, summary: lastSummary };
+  } finally {
+    isRunning = false;
+  }
 }
 
-main().catch((e) => {
-  console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
-  process.exit(1);
-});
+function runMode() {
+  const m = s(envOptional("RUN_MODE", "once")).toLowerCase();
+  if (m === "server") return "server";
+  return "once";
+}
+
+async function mainOnceAndExit() {
+  try {
+    const r = await runSyncOnce();
+    if (!r.ok) {
+      console.error(nowIso(), "FATAL", "Run did not complete", JSON.stringify(r));
+      process.exit(1);
+      return;
+    }
+    process.exit(0);
+  } catch (e) {
+    console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
+    process.exit(1);
+  }
+}
+
+function startServer() {
+  const app = express();
+  app.use(express.json({ limit: "64kb" }));
+
+  app.get("/health", (req, res) => {
+    res.json({ ok: true, running: isRunning, lastRunAt, lastSummary });
+  });
+
+  app.post("/run", async (req, res) => {
+    try {
+      const r = await runSyncOnce();
+      if (!r.ok) return res.status(409).json(r);
+      res.json(r);
+    } catch (e) {
+      console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
+      res.status(500).json({ ok: false });
+    }
+  });
+
+  const port = Number(process.env.PORT || 3000);
+  app.listen(port, () => {
+    log("Worker API listening", "port=" + port);
+  });
+}
+
+if (runMode() === "server") {
+  startServer();
+} else {
+  mainOnceAndExit();
+}
