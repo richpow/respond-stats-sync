@@ -1,5 +1,6 @@
 import pg from "pg";
-import express from "express";
+import http from "http";
+import { URL } from "url";
 
 const { Pool } = pg;
 
@@ -111,8 +112,9 @@ function toDayMonth(v) {
   if (!v) return "";
 
   let d;
-  if (v instanceof Date) d = v;
-  else {
+  if (v instanceof Date) {
+    d = v;
+  } else {
     const txt = typeof v === "string" ? v.trim() : "";
     if (!txt) return "";
     d = new Date(txt);
@@ -125,6 +127,21 @@ function toDayMonth(v) {
   const month = months[d.getUTCMonth()] || "";
   if (!month) return "";
   return String(day) + ordinalSuffix(day) + " " + month;
+}
+
+/**
+ * Canonicalise the Respond identifier.
+ * Always returns "+<digits>".
+ * Examples:
+ * "+4474 123 45678" -> "+447412345678"
+ * "447412345678" -> "+447412345678"
+ */
+function normalizePhoneE164(v) {
+  const raw = s(v);
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  return "+" + digits;
 }
 
 function respondHeaders(token) {
@@ -312,11 +329,8 @@ async function fetchRows(limit) {
         diamonds_mtd,
         valid_days_mtd,
         live_duration_mtd_hours,
-        lifecycle,
-        yesterdays_diamonds_num,
-        yesterdays_duration_hours_num,
-        yesterday_valid_day_bool
-      FROM v_respond_sync_users_plus_yesterday_fixed
+        lifecycle
+      FROM v_respond_sync_users
       ORDER BY user_id
       LIMIT $1
     `;
@@ -331,7 +345,7 @@ function dedupeByPhone(rows) {
   const byPhone = new Map();
 
   for (const r of rows) {
-    const phone = s(r.phone_e164);
+    const phone = normalizePhoneE164(r.phone_e164);
     if (!phone) continue;
 
     const current = byPhone.get(phone);
@@ -359,204 +373,211 @@ function dedupeByPhone(rows) {
   return out;
 }
 
-let isRunning = false;
-let lastRunAt = "";
-let lastSummary = { phones: 0, ok: 0, fail: 0 };
-
 async function runSyncOnce() {
-  if (isRunning) {
-    return { ok: false, status: "already_running", lastRunAt, lastSummary };
-  }
+  log("RUN start");
 
-  isRunning = true;
-  const startedAt = nowIso();
-  lastRunAt = startedAt;
+  const token = envRequired("RESPOND_IO_TOKEN");
+  const limit = Number(envOptional("SYNC_LIMIT", "100000"));
+  const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "900"));
 
-  try {
-    log("BOOT worker start");
+  const allTierTags = tierUniverse();
 
-    const token = envRequired("RESPOND_IO_TOKEN");
-    const limit = Number(envOptional("SYNC_LIMIT", "100000"));
-    const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "900"));
+  const rows = await fetchRows(limit);
+  const work = dedupeByPhone(rows);
 
-    const allTierTags = tierUniverse();
+  let ok = 0;
+  let fail = 0;
 
-    const rows = await fetchRows(limit);
-    const work = dedupeByPhone(rows);
+  for (const item of work) {
+    const r = item.row;
+    const userId = r.user_id;
+    const phone = item.phone;
 
-    let ok = 0;
-    let fail = 0;
+    try {
+      if (item.action === "delete") {
+        const del = await respondDeleteContact(token, phone);
+        const treatMissingOk = del.status === 400 || del.status === 404;
 
-    for (const item of work) {
-      const r = item.row;
-      const userId = r.user_id;
-      const phone = item.phone;
-
-      try {
-        if (item.action === "delete") {
-          const del = await respondDeleteContact(token, phone);
-          const treatMissingOk = del.status === 400 || del.status === 404;
-
-          if (!del.ok && !treatMissingOk) {
-            throw new Error("Delete contact failed HTTP " + del.status + " " + del.text);
-          }
-
-          ok += 1;
-          log("OK delete", phone);
-          await sleepMs(paceMs);
-          continue;
-        }
-
-        const tiktok = normalizeText(r.tiktok_username);
-        const realFirst = normalizeText(r.real_first_name);
-        const roleTag = normalizeText(r.role_tag);
-        const tierTag = normalizeText(r.tier_tag) || "Tier 1";
-        const lifecycle = normalizeText(r.lifecycle);
-
-        const groupValue = extractInsideParens(normalizeText(r.group_raw));
-        const managerValue = emailLocalPart(normalizeText(r.manager_raw));
-
-        const diamondsMtdRaw = Number(r.diamonds_mtd);
-        const diamondsMtd = formatNumber(r.diamonds_mtd);
-        const validDaysMtd = formatNumber(r.valid_days_mtd);
-        const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
-        const statsAsOf = toDayMonth(r.stats_as_of);
-
-        const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
-        const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
-        const yValid = r.yesterday_valid_day_bool ? "Yes" : "No";
-
-        const prevTierRank = tierRankFromTierTag(tierTag);
-        const currentMonthTierRank = tierRankFromDiamonds(diamondsMtdRaw);
-        const tierStatus = tierStatusFromRanks(prevTierRank, currentMonthTierRank);
-
-        const firstName = tiktok ? tiktok : "user_" + String(userId);
-
-        const customFields = [
-          { name: "tiktok_username", value: tiktok || null },
-          { name: "real_first_name", value: realFirst || null },
-          { name: "group", value: groupValue || null },
-          { name: "manager", value: managerValue || null },
-          { name: "tier", value: tierTag || null },
-          { name: "tier_status", value: tierStatus },
-          { name: "diamonds_mtd", value: diamondsMtd },
-          { name: "valid_days_mtd", value: validDaysMtd },
-          { name: "live_duration_mtd", value: liveDurationMtd },
-          { name: "stats_as_of", value: statsAsOf || null },
-          { name: "agency_status", value: "in_agency" },
-
-          { name: "yesterdays_diamonds", value: yDiamonds },
-          { name: "yesterdays_duration", value: yDuration },
-          { name: "yesterday_valid_day", value: yValid }
-        ];
-
-        const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
-        if (!cu.ok) {
-          throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
-        }
-
-        const roleLegacy = ["role_creator", "role_manager"];
-        const roleCanon = ["Creator", "Manager"];
-        const roleDelete = uniq(roleLegacy.concat(roleCanon));
-
-        const dr = await respondDeleteTags(token, phone, roleDelete);
-        if (!dr.ok) {
-          throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
-        }
-
-        if (roleTag) {
-          const ar = await respondAddTags(token, phone, [roleTag]);
-          if (!ar.ok) {
-            throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
-          }
-        }
-
-        if (allTierTags.length > 0) {
-          const dt = await respondDeleteTags(token, phone, allTierTags);
-          if (!dt.ok) {
-            throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
-          }
-
-          if (tierTag) {
-            const at = await respondAddTags(token, phone, [tierTag]);
-            if (!at.ok) {
-              throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
-            }
-          }
-        }
-
-        const lc = await respondUpdateLifecycle(token, phone, lifecycle);
-        if (!lc.ok) {
-          throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
+        if (!del.ok && !treatMissingOk) {
+          throw new Error("Delete contact failed HTTP " + del.status + " " + del.text);
         }
 
         ok += 1;
-        log("OK sync", phone, "tier=" + tierTag, "tier_status=" + tierStatus, "lifecycle=" + (lifecycle || ""));
-      } catch (e) {
-        fail += 1;
-        log("FAIL", "user_id=" + userId, "phone=" + phone, "err=" + String(e && e.message ? e.message : e));
+        log("OK delete", phone);
+        await sleepMs(paceMs);
+        continue;
       }
 
-      await sleepMs(paceMs);
+      const tiktok = normalizeText(r.tiktok_username);
+      const realFirst = normalizeText(r.real_first_name);
+      const roleTag = normalizeText(r.role_tag);
+      const tierTag = normalizeText(r.tier_tag) || "Tier 1";
+      const lifecycle = normalizeText(r.lifecycle);
+
+      const groupValue = extractInsideParens(normalizeText(r.group_raw));
+      const managerValue = emailLocalPart(normalizeText(r.manager_raw));
+
+      const diamondsMtdRaw = Number(r.diamonds_mtd);
+      const diamondsMtd = formatNumber(r.diamonds_mtd);
+      const validDaysMtd = formatNumber(r.valid_days_mtd);
+      const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
+      const statsAsOf = toDayMonth(r.stats_as_of);
+
+      const prevTierRank = tierRankFromTierTag(tierTag);
+      const currentMonthTierRank = tierRankFromDiamonds(diamondsMtdRaw);
+      const tierStatus = tierStatusFromRanks(prevTierRank, currentMonthTierRank);
+
+      const firstName = tiktok ? tiktok : "user_" + String(userId);
+
+      const customFields = [
+        { name: "tiktok_username", value: tiktok || null },
+        { name: "real_first_name", value: realFirst || null },
+        { name: "group", value: groupValue || null },
+        { name: "manager", value: managerValue || null },
+        { name: "tier", value: tierTag || null },
+        { name: "tier_status", value: tierStatus },
+        { name: "diamonds_mtd", value: diamondsMtd },
+        { name: "valid_days_mtd", value: validDaysMtd },
+        { name: "live_duration_mtd", value: liveDurationMtd },
+        { name: "stats_as_of", value: statsAsOf || null },
+        { name: "agency_status", value: "in_agency" }
+      ];
+
+      const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
+      if (!cu.ok) {
+        throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
+      }
+
+      const roleLegacy = ["role_creator", "role_manager"];
+      const roleCanon = ["Creator", "Manager"];
+      const roleDelete = uniq(roleLegacy.concat(roleCanon));
+
+      const dr = await respondDeleteTags(token, phone, roleDelete);
+      if (!dr.ok) {
+        throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
+      }
+
+      if (roleTag) {
+        const ar = await respondAddTags(token, phone, [roleTag]);
+        if (!ar.ok) {
+          throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
+        }
+      }
+
+      if (allTierTags.length > 0) {
+        const dt = await respondDeleteTags(token, phone, allTierTags);
+        if (!dt.ok) {
+          throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
+        }
+
+        if (tierTag) {
+          const at = await respondAddTags(token, phone, [tierTag]);
+          if (!at.ok) {
+            throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
+          }
+        }
+      }
+
+      const lc = await respondUpdateLifecycle(token, phone, lifecycle);
+      if (!lc.ok) {
+        throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
+      }
+
+      ok += 1;
+      log("OK sync", phone, "tier=" + tierTag, "tier_status=" + tierStatus, "lifecycle=" + (lifecycle || ""));
+    } catch (e) {
+      fail += 1;
+      log("FAIL", "user_id=" + userId, "phone=" + phone, "err=" + String(e && e.message ? e.message : e));
     }
 
-    lastSummary = { phones: work.length, ok, fail };
-    log("Summary", "phones=" + work.length, "ok=" + ok, "fail=" + fail);
+    await sleepMs(paceMs);
+  }
 
-    return { ok: true, status: "completed", startedAt, summary: lastSummary };
+  log("RUN summary", "phones=" + work.length, "ok=" + ok, "fail=" + fail);
+  log("RUN end");
+
+  return { phones: work.length, ok, fail };
+}
+
+let isRunning = false;
+let lastRun = null;
+
+async function runGuarded() {
+  if (isRunning) return { status: "already_running", lastRun };
+  isRunning = true;
+  try {
+    const startedAt = nowIso();
+    const result = await runSyncOnce();
+    lastRun = { startedAt, finishedAt: nowIso(), ...result };
+    return { status: "started", lastRun };
   } finally {
     isRunning = false;
   }
 }
 
-function runMode() {
-  const m = s(envOptional("RUN_MODE", "server")).toLowerCase();
-  if (m === "once") return "once";
-  return "server";
+function readBodyJson(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > 1024 * 1024) {
+        reject(new Error("Body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch (e) {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+  });
 }
 
-async function mainOnceAndExit() {
-  try {
-    const r = await runSyncOnce();
-    if (!r.ok) {
-      console.error(nowIso(), "FATAL", "Run did not complete", JSON.stringify(r));
-      process.exit(1);
-      return;
-    }
-    process.exit(0);
-  } catch (e) {
-    console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
-    process.exit(1);
+function sendJson(res, statusCode, obj) {
+  const payload = JSON.stringify(obj);
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Length", Buffer.byteLength(payload));
+  res.end(payload);
+}
+
+async function handleRequest(req, res) {
+  const urlObj = new URL(req.url || "/", "http://localhost");
+  const path = urlObj.pathname || "/";
+  const method = (req.method || "GET").toUpperCase();
+
+  if (method === "GET" && path === "/health") {
+    return sendJson(res, 200, { ok: true, running: isRunning, lastRun });
   }
-}
 
-function startServer() {
-  const app = express();
-  app.use(express.json({ limit: "64kb" }));
-
-  app.get("/health", (req, res) => {
-    res.json({ ok: true, running: isRunning, lastRunAt, lastSummary });
-  });
-
-  app.post("/run", async (req, res) => {
+  if (method === "POST" && path === "/run") {
     try {
-      const r = await runSyncOnce();
-      if (!r.ok) return res.status(409).json(r);
-      res.json(r);
+      await readBodyJson(req);
+      const out = await runGuarded();
+      return sendJson(res, 200, out);
     } catch (e) {
-      console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
-      res.status(500).json({ ok: false });
+      return sendJson(res, 500, { status: "error", error: String(e && e.message ? e.message : e) });
     }
-  });
+  }
 
-  const port = Number(process.env.PORT || 3000);
-  app.listen(port, () => {
-    log("Worker API listening", "port=" + port);
-  });
+  return sendJson(res, 404, { ok: false, error: "Not found" });
 }
 
-if (runMode() === "server") {
-  startServer();
-} else {
-  mainOnceAndExit();
+async function main() {
+  const port = Number(process.env.PORT || "8080");
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((e) => {
+      sendJson(res, 500, { status: "error", error: String(e && e.message ? e.message : e) });
+    });
+  });
+
+  server.listen(port, () => log("Worker API listening", "port=" + port));
 }
+
+main().catch((e) => {
+  console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
+  process.exit(1);
+});
