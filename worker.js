@@ -1,6 +1,5 @@
+import express from "express";
 import pg from "pg";
-import http from "http";
-import { URL } from "url";
 
 const { Pool } = pg;
 
@@ -112,9 +111,8 @@ function toDayMonth(v) {
   if (!v) return "";
 
   let d;
-  if (v instanceof Date) {
-    d = v;
-  } else {
+  if (v instanceof Date) d = v;
+  else {
     const txt = typeof v === "string" ? v.trim() : "";
     if (!txt) return "";
     d = new Date(txt);
@@ -129,13 +127,13 @@ function toDayMonth(v) {
   return String(day) + ordinalSuffix(day) + " " + month;
 }
 
-/**
- * Canonicalise the Respond identifier.
- * Always returns "+<digits>".
- * Examples:
- * "+4474 123 45678" -> "+447412345678"
- * "447412345678" -> "+447412345678"
- */
+/*
+  Critical fix: always convert any phone value to + plus digits.
+  Examples:
+  447... => +447...
+  +44 73... => +4473...
+  07... => +07... (still plus digits, better than mixed forms)
+*/
 function normalizePhoneE164(v) {
   const raw = s(v);
   if (!raw) return "";
@@ -444,44 +442,32 @@ async function runSyncOnce() {
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
-      if (!cu.ok) {
-        throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
-      }
+      if (!cu.ok) throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
 
       const roleLegacy = ["role_creator", "role_manager"];
       const roleCanon = ["Creator", "Manager"];
       const roleDelete = uniq(roleLegacy.concat(roleCanon));
 
       const dr = await respondDeleteTags(token, phone, roleDelete);
-      if (!dr.ok) {
-        throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
-      }
+      if (!dr.ok) throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
 
       if (roleTag) {
         const ar = await respondAddTags(token, phone, [roleTag]);
-        if (!ar.ok) {
-          throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
-        }
+        if (!ar.ok) throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
       }
 
       if (allTierTags.length > 0) {
         const dt = await respondDeleteTags(token, phone, allTierTags);
-        if (!dt.ok) {
-          throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
-        }
+        if (!dt.ok) throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
 
         if (tierTag) {
           const at = await respondAddTags(token, phone, [tierTag]);
-          if (!at.ok) {
-            throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
-          }
+          if (!at.ok) throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
         }
       }
 
       const lc = await respondUpdateLifecycle(token, phone, lifecycle);
-      if (!lc.ok) {
-        throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
-      }
+      if (!lc.ok) throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
 
       ok += 1;
       log("OK sync", phone, "tier=" + tierTag, "tier_status=" + tierStatus, "lifecycle=" + (lifecycle || ""));
@@ -493,91 +479,52 @@ async function runSyncOnce() {
     await sleepMs(paceMs);
   }
 
-  log("RUN summary", "phones=" + work.length, "ok=" + ok, "fail=" + fail);
+  const summary = { phones: work.length, ok, fail };
+  log("RUN summary", JSON.stringify(summary));
   log("RUN end");
-
-  return { phones: work.length, ok, fail };
+  return summary;
 }
 
 let isRunning = false;
-let lastRun = null;
+let lastRunAt = null;
+let lastSummary = null;
 
-async function runGuarded() {
-  if (isRunning) return { status: "already_running", lastRun };
+function okJson(res, obj) {
+  res.status(200).json(obj);
+}
+
+const app = express();
+app.use(express.json({ limit: "256kb" }));
+
+app.get("/health", (req, res) => {
+  okJson(res, { ok: true, running: isRunning, lastRunAt, lastSummary });
+});
+
+app.post("/run", (req, res) => {
+  if (isRunning) return okJson(res, { status: "already_running", lastRunAt, lastSummary });
+
   isRunning = true;
-  try {
-    const startedAt = nowIso();
-    const result = await runSyncOnce();
-    lastRun = { startedAt, finishedAt: nowIso(), ...result };
-    return { status: "started", lastRun };
-  } finally {
-    isRunning = false;
-  }
-}
+  lastRunAt = nowIso();
+  okJson(res, { status: "started", startedAt: lastRunAt });
 
-function readBodyJson(req) {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => {
-      data += chunk;
-      if (data.length > 1024 * 1024) {
-        reject(new Error("Body too large"));
-        req.destroy();
-      }
+  runSyncOnce()
+    .then((summary) => {
+      lastSummary = summary;
+    })
+    .catch((e) => {
+      lastSummary = { error: String(e && e.message ? e.message : e) };
+      log("RUN fatal", lastSummary.error);
+    })
+    .finally(() => {
+      isRunning = false;
     });
-    req.on("end", () => {
-      if (!data) return resolve({});
-      try {
-        resolve(JSON.parse(data));
-      } catch (e) {
-        reject(new Error("Invalid JSON body"));
-      }
-    });
-  });
-}
+});
 
-function sendJson(res, statusCode, obj) {
-  const payload = JSON.stringify(obj);
-  res.statusCode = statusCode;
-  res.setHeader("Content-Type", "application/json");
-  res.setHeader("Content-Length", Buffer.byteLength(payload));
-  res.end(payload);
-}
+app.all("*", (req, res) => {
+  res.status(404).json({ ok: false, error: "Not found" });
+});
 
-async function handleRequest(req, res) {
-  const urlObj = new URL(req.url || "/", "http://localhost");
-  const path = urlObj.pathname || "/";
-  const method = (req.method || "GET").toUpperCase();
-
-  if (method === "GET" && path === "/health") {
-    return sendJson(res, 200, { ok: true, running: isRunning, lastRun });
-  }
-
-  if (method === "POST" && path === "/run") {
-    try {
-      await readBodyJson(req);
-      const out = await runGuarded();
-      return sendJson(res, 200, out);
-    } catch (e) {
-      return sendJson(res, 500, { status: "error", error: String(e && e.message ? e.message : e) });
-    }
-  }
-
-  return sendJson(res, 404, { ok: false, error: "Not found" });
-}
-
-async function main() {
-  const port = Number(process.env.PORT || "8080");
-  const server = http.createServer((req, res) => {
-    handleRequest(req, res).catch((e) => {
-      sendJson(res, 500, { status: "error", error: String(e && e.message ? e.message : e) });
-    });
-  });
-
-  server.listen(port, () => log("Worker API listening", "port=" + port));
-}
-
-main().catch((e) => {
-  console.error(nowIso(), "FATAL", e && e.stack ? e.stack : String(e));
-  process.exit(1);
+const port = Number(process.env.PORT || "8080");
+app.listen(port, () => {
+  log("Worker API listening", "port=" + port);
 });
