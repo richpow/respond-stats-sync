@@ -86,6 +86,12 @@ function formatNumber(v) {
   return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
+function formatNumberNoCommas(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  return String(Math.trunc(n));
+}
+
 function hoursDecimalToHhMm(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return "0h 0m";
@@ -128,11 +134,7 @@ function toDayMonth(v) {
 }
 
 /*
-  Critical fix: always convert any phone value to + plus digits.
-  Examples:
-  447... => +447...
-  +44 73... => +4473...
-  07... => +07... (still plus digits, better than mixed forms)
+  Always convert any phone value to plus then digits.
 */
 function normalizePhoneE164(v) {
   const raw = s(v);
@@ -313,23 +315,29 @@ async function fetchRows(limit) {
   try {
     const q = `
       SELECT
-        user_id,
-        phone_e164,
-        tiktok_username,
-        real_first_name,
-        agency_status,
-        role_tag,
-        group_raw,
-        manager_raw,
-        tier_tag,
-        profile_pic_url,
-        stats_as_of,
-        diamonds_mtd,
-        valid_days_mtd,
-        live_duration_mtd_hours,
-        lifecycle
-      FROM v_respond_sync_users
-      ORDER BY user_id
+        v.user_id,
+        v.phone_e164,
+        u.mobile AS mobile,
+        v.tiktok_username,
+        v.real_first_name,
+        v.agency_status,
+        v.role_tag,
+        v.group_raw,
+        v.manager_raw,
+        v.tier_tag,
+        v.profile_pic_url,
+        v.stats_as_of,
+        v.diamonds_mtd,
+        v.valid_days_mtd,
+        v.live_duration_mtd_hours,
+        v.lifecycle,
+        v.yesterdays_diamonds_num,
+        v.yesterdays_duration_hours_num,
+        v.yesterday_valid_day_bool
+      FROM v_respond_sync_users_plus_yesterday v
+      LEFT JOIN users u
+        ON u.id = v.user_id
+      ORDER BY v.user_id
       LIMIT $1
     `;
     const res = await client.query(q, [limit]);
@@ -343,7 +351,7 @@ function dedupeByPhone(rows) {
   const byPhone = new Map();
 
   for (const r of rows) {
-    const phone = normalizePhoneE164(r.phone_e164);
+    const phone = normalizePhoneE164(r.mobile || r.phone_e164);
     if (!phone) continue;
 
     const current = byPhone.get(phone);
@@ -427,6 +435,10 @@ async function runSyncOnce() {
 
       const firstName = tiktok ? tiktok : "user_" + String(userId);
 
+      const yDiamonds = formatNumberNoCommas(r.yesterdays_diamonds_num);
+      const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
+      const yValidDay = r.yesterday_valid_day_bool === true;
+
       const customFields = [
         { name: "tiktok_username", value: tiktok || null },
         { name: "real_first_name", value: realFirst || null },
@@ -437,6 +449,11 @@ async function runSyncOnce() {
         { name: "diamonds_mtd", value: diamondsMtd },
         { name: "valid_days_mtd", value: validDaysMtd },
         { name: "live_duration_mtd", value: liveDurationMtd },
+
+        { name: "yesterdays_diamonds", value: yDiamonds },
+        { name: "yesterdays_duration", value: yDuration },
+        { name: "yesterday_valid_day", value: yValidDay },
+
         { name: "stats_as_of", value: statsAsOf || null },
         { name: "agency_status", value: "in_agency" }
       ];
