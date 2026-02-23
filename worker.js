@@ -86,12 +86,6 @@ function formatNumber(v) {
   return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
-function formatNumberNoCommas(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0";
-  return String(Math.trunc(n));
-}
-
 function hoursDecimalToHhMm(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return "0h 0m";
@@ -133,9 +127,6 @@ function toDayMonth(v) {
   return String(day) + ordinalSuffix(day) + " " + month;
 }
 
-/*
-  Always convert any phone value to plus then digits.
-*/
 function normalizePhoneE164(v) {
   const raw = s(v);
   if (!raw) return "";
@@ -316,8 +307,8 @@ async function fetchRows(limit) {
     const q = `
       SELECT
         v.user_id,
-        v.phone_e164,
         u.mobile AS mobile,
+        v.phone_e164,
         v.tiktok_username,
         v.real_first_name,
         v.agency_status,
@@ -435,9 +426,10 @@ async function runSyncOnce() {
 
       const firstName = tiktok ? tiktok : "user_" + String(userId);
 
-      const yDiamonds = formatNumberNoCommas(r.yesterdays_diamonds_num);
+      const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
+      const yDurationHours = Number(r.yesterdays_duration_hours_num);
       const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
-      const yValidDay = r.yesterday_valid_day_bool === true;
+      const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
 
       const customFields = [
         { name: "tiktok_username", value: tiktok || null },
