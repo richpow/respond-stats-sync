@@ -324,8 +324,10 @@ async function fetchRows(limit) {
         v.lifecycle,
         v.yesterdays_diamonds_num,
         v.yesterdays_duration_hours_num,
-        v.yesterday_valid_day_bool
-      FROM v_respond_sync_users_plus_yesterday v
+        v.yesterday_valid_day_bool,
+        v.fasttrack_tier,
+        v.moving_to
+      FROM v_respond_sync_users_plus_yesterday_plus_leagues v
       LEFT JOIN users u
         ON u.id = v.user_id
       ORDER BY v.user_id
@@ -431,6 +433,9 @@ async function runSyncOnce() {
       const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
       const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
 
+      const fasttrackTier = normalizeText(r.fasttrack_tier);
+      const movingTo = normalizeText(r.moving_to);
+
       const customFields = [
         { name: "tiktok_username", value: tiktok || null },
         { name: "real_first_name", value: realFirst || null },
@@ -445,6 +450,9 @@ async function runSyncOnce() {
         { name: "yesterdays_diamonds", value: yDiamonds },
         { name: "yesterdays_duration", value: yDuration },
         { name: "yesterday_valid_day", value: yValidDay },
+
+        { name: "fasttrack_tier", value: fasttrackTier || null },
+        { name: "moving_to", value: movingTo || null },
 
         { name: "stats_as_of", value: statsAsOf || null },
         { name: "agency_status", value: "in_agency" }
