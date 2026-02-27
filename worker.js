@@ -86,15 +86,6 @@ function formatNumber(v) {
   return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
-function formatCurrencyUSD(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD"
-  }).format(n);
-}
-
 function hoursDecimalToHhMm(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return "0h 0m";
@@ -336,7 +327,8 @@ async function fetchRows(limit) {
         v.yesterday_valid_day_bool,
         v.fasttrack_tier,
         v.moving_to,
-        v.cash_value
+        v.cash_value,
+        v.last_month_diamonds
       FROM v_respond_sync_users_plus_yesterday_plus_leagues v
       LEFT JOIN users u
         ON u.id = v.user_id
@@ -428,7 +420,12 @@ async function runSyncOnce() {
 
       const diamondsMtdRaw = Number(r.diamonds_mtd);
       const diamondsMtd = formatNumber(r.diamonds_mtd);
-      const cashValueFormatted = formatCurrencyUSD(r.cash_value);
+
+      const cashValueNum = Number(r.cash_value);
+      const cashValue = Number.isFinite(cashValueNum) ? Math.round(cashValueNum * 100) / 100 : null;
+
+      const lastMonthDiamonds = formatNumber(r.last_month_diamonds);
+
       const validDaysMtd = formatNumber(r.valid_days_mtd);
       const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
       const statsAsOf = toDayMonth(r.stats_as_of);
@@ -455,7 +452,11 @@ async function runSyncOnce() {
         { name: "tier", value: tierTag || null },
         { name: "tier_status", value: tierStatus },
         { name: "diamonds_mtd", value: diamondsMtd },
-        { name: "cash_value", value: cashValueFormatted || null },
+
+        { name: "cash_value", value: cashValue },
+
+        { name: "last_month_diamonds", value: lastMonthDiamonds },
+
         { name: "valid_days_mtd", value: validDaysMtd },
         { name: "live_duration_mtd", value: liveDurationMtd },
 
