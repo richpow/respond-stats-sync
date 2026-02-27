@@ -86,6 +86,15 @@ function formatNumber(v) {
   return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
+function formatCurrencyGBP(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP"
+  }).format(n);
+}
+
 function hoursDecimalToHhMm(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return "0h 0m";
@@ -423,6 +432,7 @@ async function runSyncOnce() {
 
       const cashValueNum = Number(r.cash_value);
       const cashValue = Number.isFinite(cashValueNum) ? Math.round(cashValueNum * 100) / 100 : null;
+      const cashValueDisplay = cashValue === null ? null : formatCurrencyGBP(cashValue);
 
       const lastMonthDiamonds = formatNumber(r.last_month_diamonds);
 
@@ -454,6 +464,7 @@ async function runSyncOnce() {
         { name: "diamonds_mtd", value: diamondsMtd },
 
         { name: "cash_value", value: cashValue },
+        { name: "cash_value_display", value: cashValueDisplay },
 
         { name: "last_month_diamonds", value: lastMonthDiamonds },
 
