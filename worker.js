@@ -34,6 +34,12 @@ function normalizeText(v) {
   return txt;
 }
 
+function clamp255(v) {
+  const txt = normalizeText(v);
+  if (!txt) return "";
+  return txt.length <= 255 ? txt : txt.slice(0, 255);
+}
+
 function sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -80,16 +86,19 @@ function emailLocalPart(v) {
   return txt;
 }
 
-function formatNumberInt(v) {
+function formatNumber(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0";
-  return new Intl.NumberFormat("en").format(Math.trunc(n));
+  return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
 function formatCurrencyGBP(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "";
-  return new Intl.NumberFormat("en", { style: "currency", currency: "GBP" }).format(n);
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP"
+  }).format(n);
 }
 
 function hoursDecimalToHhMm(v) {
@@ -429,9 +438,9 @@ async function runSyncOnce() {
       const managerValue = emailLocalPart(normalizeText(r.manager_raw));
 
       const diamondsMtdRaw = Number(r.diamonds_mtd);
-      const diamondsMtd = formatNumberInt(r.diamonds_mtd);
+      const diamondsMtd = formatNumber(r.diamonds_mtd);
 
-      const validDaysMtd = formatNumberInt(r.valid_days_mtd);
+      const validDaysMtd = formatNumber(r.valid_days_mtd);
       const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
       const statsAsOf = toDayMonth(r.stats_as_of);
 
@@ -441,7 +450,7 @@ async function runSyncOnce() {
 
       const firstName = tiktok ? tiktok : "user_" + String(userId);
 
-      const yDiamonds = formatNumberInt(r.yesterdays_diamonds_num);
+      const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
       const yDurationHours = Number(r.yesterdays_duration_hours_num);
       const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
       const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
@@ -449,15 +458,13 @@ async function runSyncOnce() {
       const fasttrackTier = normalizeText(r.fasttrack_tier);
       const movingTo = normalizeText(r.moving_to);
 
-      const cashValueNum = Number(r.cash_value);
-      const cashValueText = Number.isFinite(cashValueNum) ? formatCurrencyGBP(cashValueNum) : null;
+      const cashValueText = r.cash_value === null || r.cash_value === undefined ? "" : formatCurrencyGBP(r.cash_value);
+      const lastMonthDiamonds = formatNumber(r.last_month_diamonds);
 
-      const lastMonthDiamondsText = formatNumberInt(r.last_month_diamonds);
-
-      const battlePendingSummary = normalizeText(r.battle_pending_summary);
-      const battleNextSummary = normalizeText(r.battle_next_summary);
-      const trafficBoostSummary = normalizeText(r.traffic_boost_summary);
-      const incentiveSummary = normalizeText(r.incentive_summary);
+      const battlePendingSummary = clamp255(r.battle_pending_summary);
+      const battleNextSummary = clamp255(r.battle_next_summary);
+      const trafficBoostSummary = clamp255(r.traffic_boost_summary);
+      const incentiveSummary = clamp255(r.incentive_summary);
 
       const customFields = [
         { name: "tiktok_username", value: tiktok || null },
@@ -466,28 +473,28 @@ async function runSyncOnce() {
         { name: "manager", value: managerValue || null },
         { name: "tier", value: tierTag || null },
         { name: "tier_status", value: tierStatus },
-        { name: "diamonds_mtd", value: diamondsMtd },
+        { name: "diamonds_mtd", value: clamp255(diamondsMtd) },
 
-        { name: "valid_days_mtd", value: validDaysMtd },
-        { name: "live_duration_mtd", value: liveDurationMtd },
+        { name: "cash_value", value: cashValueText ? clamp255(cashValueText) : null },
+        { name: "last_month_diamonds", value: clamp255(lastMonthDiamonds) },
 
-        { name: "yesterdays_diamonds", value: yDiamonds },
-        { name: "yesterdays_duration", value: yDuration },
+        { name: "valid_days_mtd", value: clamp255(validDaysMtd) },
+        { name: "live_duration_mtd", value: clamp255(liveDurationMtd) },
+
+        { name: "yesterdays_diamonds", value: clamp255(yDiamonds) },
+        { name: "yesterdays_duration", value: clamp255(yDuration) },
         { name: "yesterday_valid_day", value: yValidDay },
 
         { name: "fasttrack_tier", value: fasttrackTier || null },
         { name: "moving_to", value: movingTo || null },
 
-        { name: "cash_value", value: cashValueText },
-        { name: "last_month_diamonds", value: lastMonthDiamondsText },
+        { name: "stats_as_of", value: statsAsOf ? clamp255(statsAsOf) : null },
+        { name: "agency_status", value: "in_agency" },
 
         { name: "battle_pending_summary", value: battlePendingSummary || null },
         { name: "battle_next_summary", value: battleNextSummary || null },
         { name: "traffic_boost_summary", value: trafficBoostSummary || null },
-        { name: "incentive_summary", value: incentiveSummary || null },
-
-        { name: "stats_as_of", value: statsAsOf || null },
-        { name: "agency_status", value: "in_agency" }
+        { name: "incentive_summary", value: incentiveSummary || null }
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
