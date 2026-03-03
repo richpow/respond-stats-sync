@@ -80,19 +80,16 @@ function emailLocalPart(v) {
   return txt;
 }
 
-function formatNumber(v) {
+function formatNumberInt(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0";
-  return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
+  return new Intl.NumberFormat("en").format(Math.trunc(n));
 }
 
 function formatCurrencyGBP(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "";
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP"
-  }).format(n);
+  return new Intl.NumberFormat("en", { style: "currency", currency: "GBP" }).format(n);
 }
 
 function hoursDecimalToHhMm(v) {
@@ -336,12 +333,14 @@ async function fetchRows(limit) {
         v.yesterday_valid_day_bool,
         v.fasttrack_tier,
         v.moving_to,
+        v.cash_value,
+        v.last_month_diamonds,
         v.battle_pending_summary,
         v.battle_next_summary,
         v.traffic_boost_summary,
         v.incentive_summary
-      FROM v_respond_sync_users_plus_yesterday_plus_leagues_extended v
-      LEFT JOIN users u
+      FROM public.v_respond_sync_users_plus_yesterday_plus_leagues v
+      LEFT JOIN public.users u
         ON u.id = v.user_id
       ORDER BY v.user_id
       LIMIT $1
@@ -430,9 +429,9 @@ async function runSyncOnce() {
       const managerValue = emailLocalPart(normalizeText(r.manager_raw));
 
       const diamondsMtdRaw = Number(r.diamonds_mtd);
-      const diamondsMtd = formatNumber(r.diamonds_mtd);
+      const diamondsMtd = formatNumberInt(r.diamonds_mtd);
 
-      const validDaysMtd = formatNumber(r.valid_days_mtd);
+      const validDaysMtd = formatNumberInt(r.valid_days_mtd);
       const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
       const statsAsOf = toDayMonth(r.stats_as_of);
 
@@ -442,13 +441,18 @@ async function runSyncOnce() {
 
       const firstName = tiktok ? tiktok : "user_" + String(userId);
 
-      const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
+      const yDiamonds = formatNumberInt(r.yesterdays_diamonds_num);
       const yDurationHours = Number(r.yesterdays_duration_hours_num);
       const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
       const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
 
       const fasttrackTier = normalizeText(r.fasttrack_tier);
       const movingTo = normalizeText(r.moving_to);
+
+      const cashValueNum = Number(r.cash_value);
+      const cashValueText = Number.isFinite(cashValueNum) ? formatCurrencyGBP(cashValueNum) : null;
+
+      const lastMonthDiamondsText = formatNumberInt(r.last_month_diamonds);
 
       const battlePendingSummary = normalizeText(r.battle_pending_summary);
       const battleNextSummary = normalizeText(r.battle_next_summary);
@@ -474,13 +478,16 @@ async function runSyncOnce() {
         { name: "fasttrack_tier", value: fasttrackTier || null },
         { name: "moving_to", value: movingTo || null },
 
-        { name: "stats_as_of", value: statsAsOf || null },
-        { name: "agency_status", value: "in_agency" },
+        { name: "cash_value", value: cashValueText },
+        { name: "last_month_diamonds", value: lastMonthDiamondsText },
 
         { name: "battle_pending_summary", value: battlePendingSummary || null },
         { name: "battle_next_summary", value: battleNextSummary || null },
         { name: "traffic_boost_summary", value: trafficBoostSummary || null },
-        { name: "incentive_summary", value: incentiveSummary || null }
+        { name: "incentive_summary", value: incentiveSummary || null },
+
+        { name: "stats_as_of", value: statsAsOf || null },
+        { name: "agency_status", value: "in_agency" }
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
