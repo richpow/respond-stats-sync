@@ -383,6 +383,31 @@ function dedupeByPhone(rows) {
   return out;
 }
 
+async function fetchAgentCreatorSummary(tiktokUsername) {
+  const baseUrl = envOptional("AGENT_BASE_URL", "https://creator.fasttrackagency.co.uk");
+  const key = envRequired("AGENT_KEY");
+
+  const url =
+    s(baseUrl).replace(/\/+$/, "") +
+    "/api/agent/creator-summary/" +
+    encodeURIComponent(s(tiktokUsername));
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Agent-Key": key
+    }
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error("Agent summary failed HTTP " + res.status + " " + txt);
+  }
+
+  return await res.json();
+}
+
 async function runSyncOnce() {
   log("RUN start");
 
@@ -454,6 +479,22 @@ async function runSyncOnce() {
       const fasttrackTier = normalizeText(r.fasttrack_tier);
       const movingTo = normalizeText(r.moving_to);
 
+      let creatorSnapshotValue = null;
+      if (tiktok) {
+        try {
+          const agentData = await fetchAgentCreatorSummary(tiktok);
+          const snapshot = {
+            version: 1,
+            syncedAt: nowIso(),
+            data: agentData
+          };
+          creatorSnapshotValue = JSON.stringify(snapshot);
+        } catch (e) {
+          log("Agent snapshot fetch failed", "user_id=" + userId, "tiktok=" + tiktok, "err=" + String(e && e.message ? e.message : e));
+          creatorSnapshotValue = null;
+        }
+      }
+
       const customFields = [
         { name: "tiktok_username", value: tiktok || null },
         { name: "real_first_name", value: realFirst || null },
@@ -478,7 +519,9 @@ async function runSyncOnce() {
         { name: "moving_to", value: movingTo || null },
 
         { name: "stats_as_of", value: statsAsOf || null },
-        { name: "agency_status", value: "in_agency" }
+        { name: "agency_status", value: "in_agency" },
+
+        { name: "creator_snapshot", value: creatorSnapshotValue }
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
