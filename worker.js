@@ -105,15 +105,6 @@ function formatNumber(v) {
   return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
 }
 
-function formatCurrencyGBP(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP"
-  }).format(n);
-}
-
 function hoursDecimalToHhMm(v) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return "0h 0m";
@@ -334,7 +325,6 @@ async function fetchRows(limit) {
         v.fasttrack_tier,
         v.moving_to,
         v.activity_status,
-        v.cash_value,
         v.last_month_diamonds,
         v.battle_pending_summary,
         v.battle_next_summary,
@@ -393,7 +383,7 @@ function dedupeByPhone(rows) {
 async function runSyncOnce() {
   const token = envRequired("RESPOND_IO_TOKEN");
   const limit = Number(envOptional("SYNC_LIMIT", "100000"));
-  const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "250"));
+  const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "500"));
 
   const rows = await fetchRows(limit);
   const work = dedupeByPhone(rows);
@@ -443,8 +433,6 @@ async function runSyncOnce() {
       const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
       const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
 
-      const cashValueText =
-        r.cash_value === null || r.cash_value === undefined ? "" : formatCurrencyGBP(r.cash_value);
       const lastMonthDiamonds = formatNumber(r.last_month_diamonds);
 
       const battlePendingSummary = clamp255(r.battle_pending_summary);
@@ -461,7 +449,6 @@ async function runSyncOnce() {
         { name: "manager", value: managerValue || null },
         { name: "tier", value: tierTag || null },
         { name: "diamonds_mtd", value: clamp255(diamondsMtd) },
-        { name: "cash_value", value: cashValueText ? clamp255(cashValueText) : null },
         { name: "last_month_diamonds", value: clamp255(lastMonthDiamonds) },
         { name: "valid_days_mtd", value: clamp255(validDaysMtd) },
         { name: "live_duration_mtd", value: clamp255(liveDurationMtd) },
