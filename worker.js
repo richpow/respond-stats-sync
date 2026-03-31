@@ -84,7 +84,6 @@ async function respondDeleteTags(token, phoneE164, tags) {
 
     if (!r.ok) {
       log("DELETE TAGS FAILED", phoneE164, part, r.status, r.text);
-      // DO NOT FAIL
     }
   }
 
@@ -100,7 +99,6 @@ async function respondAddTags(token, phoneE164, tags) {
 
     if (!r.ok) {
       log("ADD TAG FAILED", phoneE164, part, r.status, r.text);
-      // DO NOT FAIL
     }
   }
 
@@ -148,7 +146,6 @@ async function runSyncOnce() {
 
     await respondCreateOrUpdate(token, phone, firstName, []);
 
-    // ===== ACTIVITY TAGS =====
     const activityTags = ["Active", "Cooling", "Dormant"];
 
     await respondDeleteTags(token, phone, activityTags);
@@ -166,8 +163,13 @@ async function runSyncOnce() {
 const app = express();
 
 app.post("/run", async (req, res) => {
+  log("RUN TRIGGERED");
   runSyncOnce();
   res.json({ status: "started" });
 });
 
-app.listen(process.env.PORT || 8080);
+const port = process.env.PORT || 8080;
+
+app.listen(port, () => {
+  log("LISTENING ON PORT", port);
+});
