@@ -17,12 +17,6 @@ function envRequired(name) {
   return String(v);
 }
 
-function envOptional(name, fallback) {
-  const v = process.env[name];
-  if (v === undefined || v === null) return fallback;
-  return String(v);
-}
-
 function s(v) {
   return typeof v === "string" ? v.trim() : "";
 }
@@ -32,23 +26,6 @@ function normalizeText(v) {
   if (!txt) return "";
   if (txt.toUpperCase() === "N/A") return "";
   return txt;
-}
-
-function sleepMs(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function uniq(arr) {
-  const out = [];
-  const seen = new Set();
-  for (const item of arr) {
-    const v = s(item);
-    if (!v) continue;
-    if (seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
 }
 
 function chunk10(arr) {
@@ -104,8 +81,13 @@ async function respondDeleteTags(token, phoneE164, tags) {
 
   for (const part of chunk10(tags)) {
     const r = await httpCall("DELETE", url, token, part);
-    if (!r.ok) return r;
+
+    if (!r.ok) {
+      log("DELETE TAGS FAILED", phoneE164, part, r.status, r.text);
+      // DO NOT FAIL
+    }
   }
+
   return { ok: true };
 }
 
@@ -115,8 +97,13 @@ async function respondAddTags(token, phoneE164, tags) {
 
   for (const part of chunk10(tags)) {
     const r = await httpCall("POST", url, token, part);
-    if (!r.ok) return r;
+
+    if (!r.ok) {
+      log("ADD TAG FAILED", phoneE164, part, r.status, r.text);
+      // DO NOT FAIL
+    }
   }
+
   return { ok: true };
 }
 
@@ -164,14 +151,12 @@ async function runSyncOnce() {
     // ===== ACTIVITY TAGS =====
     const activityTags = ["Active", "Cooling", "Dormant"];
 
-    const del = await respondDeleteTags(token, phone, activityTags);
-    if (!del.ok) throw new Error("Delete tags failed");
+    await respondDeleteTags(token, phone, activityTags);
 
     const status = normalizeText(r.activity_status);
 
     if (status) {
-      const add = await respondAddTags(token, phone, [status]);
-      if (!add.ok) throw new Error("Add tag failed");
+      await respondAddTags(token, phone, [status]);
     }
   }
 
