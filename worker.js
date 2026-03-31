@@ -34,25 +34,6 @@ function normalizeText(v) {
   return txt;
 }
 
-function normalizeAgencyStatus(v) {
-  return normalizeText(v).toLowerCase();
-}
-
-function isDeletedAgencyStatus(v) {
-  const status = normalizeAgencyStatus(v);
-  return status === "quit" || status === "left_agency";
-}
-
-function isInAgencyStatus(v) {
-  return normalizeAgencyStatus(v) === "in_agency";
-}
-
-function clamp255(v) {
-  const txt = normalizeText(v);
-  if (!txt) return "";
-  return txt.length <= 255 ? txt : txt.slice(0, 255);
-}
-
 function sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -76,85 +57,6 @@ function chunk10(arr) {
   return out;
 }
 
-function extractInsideParens(v) {
-  const txt = s(v);
-  if (!txt) return "";
-  const open = txt.indexOf("(");
-  const close = txt.lastIndexOf(")");
-  if (open >= 0 && close > open) {
-    const inside = txt.slice(open + 1, close).trim();
-    return inside || txt;
-  }
-  return txt;
-}
-
-function emailLocalPart(v) {
-  const txt = s(v);
-  if (!txt) return "";
-  const at = txt.indexOf("@");
-  if (at > 0) {
-    const left = txt.slice(0, at).trim();
-    return left || txt;
-  }
-  return txt;
-}
-
-function formatNumber(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0";
-  return new Intl.NumberFormat("en-GB").format(Math.trunc(n));
-}
-
-function formatCurrencyGBP(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "";
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP"
-  }).format(n);
-}
-
-function hoursDecimalToHhMm(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) return "0h 0m";
-  const totalMinutes = Math.round(n * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  return String(h) + "h " + String(m) + "m";
-}
-
-function ordinalSuffix(day) {
-  const d = Number(day);
-  if (!Number.isFinite(d)) return "th";
-  const mod100 = d % 100;
-  if (mod100 >= 11 && mod100 <= 13) return "th";
-  const mod10 = d % 10;
-  if (mod10 === 1) return "st";
-  if (mod10 === 2) return "nd";
-  if (mod10 === 3) return "rd";
-  return "th";
-}
-
-function toDayMonth(v) {
-  if (!v) return "";
-
-  let d;
-  if (v instanceof Date) d = v;
-  else {
-    const txt = typeof v === "string" ? v.trim() : "";
-    if (!txt) return "";
-    d = new Date(txt);
-  }
-
-  if (Number.isNaN(d.getTime())) return "";
-
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const day = d.getUTCDate();
-  const month = months[d.getUTCMonth()] || "";
-  if (!month) return "";
-  return String(day) + ordinalSuffix(day) + " " + month;
-}
-
 function normalizePhoneE164(v) {
   const raw = s(v);
   if (!raw) return "";
@@ -165,7 +67,7 @@ function normalizePhoneE164(v) {
 
 function respondHeaders(token) {
   return {
-    Accept: "application/json, application/xml, multipart/form-data",
+    Accept: "application/json",
     Authorization: "Bearer " + token,
     "Content-Type": "application/json"
   };
@@ -175,437 +77,112 @@ async function httpCall(method, url, token, body) {
   const res = await fetch(url, {
     method,
     headers: respondHeaders(token),
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: body ? JSON.stringify(body) : undefined
   });
   const text = await res.text();
   return { ok: res.ok, status: res.status, text };
-}
-
-async function withQueueRetry(fn) {
-  const maxAttempts = Number(envOptional("RESPOND_IO_RETRY_MAX", "12"));
-  const baseDelay = Number(envOptional("RESPOND_IO_RETRY_BASE_MS", "2000"));
-  const maxDelay = Number(envOptional("RESPOND_IO_RETRY_MAX_MS", "30000"));
-
-  let attempt = 0;
-  while (true) {
-    attempt += 1;
-
-    const r = await fn();
-    if (r.ok) return r;
-
-    const isQueue = r.status === 449 && s(r.text).includes("in the queue");
-    if (!isQueue) return r;
-    if (attempt >= maxAttempts) return r;
-
-    const delay = Math.min(maxDelay, baseDelay * Math.pow(2, attempt - 1));
-    log("HTTP 449 queue retry", "delay_ms=" + delay, "attempt=" + attempt + "/" + maxAttempts);
-    await sleepMs(delay);
-  }
 }
 
 function urlWithPhone(template, phoneE164) {
   return template.replace("{identifier}", "phone:" + phoneE164);
 }
 
-async function respondCreateOrUpdate(token, phoneE164, firstName, profilePic, customFields) {
+async function respondCreateOrUpdate(token, phoneE164, firstName, customFields) {
   const base = envRequired("RESPOND_IO_CREATE_OR_UPDATE_URL");
   const url = urlWithPhone(base, phoneE164);
 
-  const body = {
+  return await httpCall("POST", url, token, {
     firstName,
     phone: phoneE164,
     custom_fields: customFields
-  };
-
-  if (s(profilePic)) body.profilePic = s(profilePic);
-
-  return await withQueueRetry(() => httpCall("POST", url, token, body));
-}
-
-async function respondDeleteContact(token, phoneE164) {
-  const base = envRequired("RESPOND_IO_DELETE_CONTACT_URL");
-  const url = urlWithPhone(base, phoneE164);
-  return await httpCall("DELETE", url, token, undefined);
-}
-
-async function respondAddTags(token, phoneE164, tags) {
-  const base = envRequired("RESPOND_IO_ADD_TAGS_URL");
-  const url = urlWithPhone(base, phoneE164);
-
-  const payload = uniq(tags);
-  if (payload.length === 0) return { ok: true, status: 200, text: "" };
-
-  for (const part of chunk10(payload)) {
-    const r = await withQueueRetry(() => httpCall("POST", url, token, part));
-    if (!r.ok) return r;
-  }
-  return { ok: true, status: 200, text: "" };
+  });
 }
 
 async function respondDeleteTags(token, phoneE164, tags) {
   const base = envRequired("RESPOND_IO_DELETE_TAGS_URL");
   const url = urlWithPhone(base, phoneE164);
 
-  const payload = uniq(tags);
-  if (payload.length === 0) return { ok: true, status: 200, text: "" };
-
-  for (const part of chunk10(payload)) {
-    const r = await withQueueRetry(() => httpCall("DELETE", url, token, part));
+  for (const part of chunk10(tags)) {
+    const r = await httpCall("DELETE", url, token, part);
     if (!r.ok) return r;
   }
-  return { ok: true, status: 200, text: "" };
+  return { ok: true };
 }
 
-async function respondUpdateLifecycle(token, phoneE164, lifecycleName) {
-  const base = envRequired("RESPOND_IO_UPDATE_LIFECYCLE_URL");
+async function respondAddTags(token, phoneE164, tags) {
+  const base = envRequired("RESPOND_IO_ADD_TAGS_URL");
   const url = urlWithPhone(base, phoneE164);
 
-  const body = { name: s(lifecycleName) ? s(lifecycleName) : "" };
-  return await withQueueRetry(() => httpCall("POST", url, token, body));
-}
-
-function tierUniverse() {
-  const canonical = [
-    "Tier 1",
-    "Tier 2",
-    "Tier 3 (Mature)",
-    "Tier 4",
-    "Tier 5 (Pre top)",
-    "Tier 6",
-    "Tier 7",
-    "Tier 8 (Top)",
-    "Tier 9",
-    "Tier 10"
-  ];
-
-  const fromEnv = uniq(
-    s(envOptional("TIER_TAGS_CSV", ""))
-      .split(",")
-      .map((x) => s(x))
-  );
-
-  return uniq(canonical.concat(fromEnv));
-}
-
-function tierRankFromTierTag(tierTag) {
-  const t = normalizeText(tierTag);
-
-  if (t.startsWith("Tier 10")) return 10;
-  if (t.startsWith("Tier 9")) return 9;
-  if (t.startsWith("Tier 8")) return 8;
-  if (t.startsWith("Tier 7")) return 7;
-  if (t.startsWith("Tier 6")) return 6;
-  if (t.startsWith("Tier 5")) return 5;
-  if (t.startsWith("Tier 4")) return 4;
-  if (t.startsWith("Tier 3")) return 3;
-  if (t.startsWith("Tier 2")) return 2;
-  return 1;
-}
-
-function tierRankFromDiamonds(d) {
-  const n = Number(d);
-  if (!Number.isFinite(n) || n <= 0) return 1;
-
-  if (n >= 5000000) return 10;
-  if (n >= 2500000) return 9;
-  if (n >= 1600000) return 8;
-  if (n >= 1000000) return 7;
-  if (n >= 700000) return 6;
-  if (n >= 500000) return 5;
-  if (n >= 300000) return 4;
-  if (n >= 200000) return 3;
-  if (n >= 100000) return 2;
-  return 1;
-}
-
-function tierStatusFromRanks(prevRank, currentMonthRank) {
-  if (currentMonthRank > prevRank) return "Upgrading";
-  if (currentMonthRank < prevRank) return "Downgrading";
-  return "Retained";
+  for (const part of chunk10(tags)) {
+    const r = await httpCall("POST", url, token, part);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
 }
 
 const pool = new Pool({
-  connectionString: envRequired("DATABASE_URL"),
-  ssl: envOptional("DATABASE_SSL", "false") === "true" ? { rejectUnauthorized: false } : undefined
+  connectionString: envRequired("DATABASE_URL")
 });
 
 async function fetchRows(limit) {
   const client = await pool.connect();
   try {
-    const q = `
+    const res = await client.query(`
       SELECT
         v.user_id,
-        u.mobile AS mobile,
-        v.phone_e164,
+        u.mobile,
         v.tiktok_username,
         v.real_first_name,
         v.agency_status,
         v.role_tag,
-        v.group_raw,
-        v.manager_raw,
-        v.tier_tag,
-        v.profile_pic_url,
-        v.stats_as_of,
-        v.diamonds_mtd,
-        v.valid_days_mtd,
-        v.live_duration_mtd_hours,
-        v.lifecycle,
-        v.yesterdays_diamonds_num,
-        v.yesterdays_duration_hours_num,
-        v.yesterday_valid_day_bool,
-        v.fasttrack_tier,
-        v.moving_to,
-        v.cash_value,
-        v.last_month_diamonds,
-        v.battle_pending_summary,
-        v.battle_next_summary,
-        v.traffic_boost_summary,
-        v.incentive_summary
+        v.activity_status
       FROM public.v_respond_sync_users_plus_yesterday_plus_leagues v
-      LEFT JOIN public.users u
-        ON u.id = v.user_id
+      LEFT JOIN public.users u ON u.id = v.user_id
+      WHERE v.role_tag = 'Creator'
       ORDER BY v.user_id
       LIMIT $1
-    `;
-    const res = await client.query(q, [limit]);
+    `, [limit]);
+
     return res.rows;
   } finally {
     client.release();
   }
 }
 
-function dedupeByPhone(rows) {
-  const byPhone = new Map();
+async function runSyncOnce() {
+  const token = envRequired("RESPOND_IO_TOKEN");
+  const rows = await fetchRows(100000);
 
   for (const r of rows) {
-    const phone = normalizePhoneE164(r.mobile || r.phone_e164);
+    const phone = normalizePhoneE164(r.mobile);
     if (!phone) continue;
 
-    const current = byPhone.get(phone);
-    if (!current) byPhone.set(phone, { phone, rows: [r] });
-    else current.rows.push(r);
+    const firstName = r.tiktok_username || "user_" + r.user_id;
+
+    await respondCreateOrUpdate(token, phone, firstName, []);
+
+    // ===== ACTIVITY TAGS =====
+    const activityTags = ["Active", "Cooling", "Dormant"];
+
+    const del = await respondDeleteTags(token, phone, activityTags);
+    if (!del.ok) throw new Error("Delete tags failed");
+
+    const status = normalizeText(r.activity_status);
+
+    if (status) {
+      const add = await respondAddTags(token, phone, [status]);
+      if (!add.ok) throw new Error("Add tag failed");
+    }
   }
 
-  const out = [];
-
-  for (const entry of byPhone.values()) {
-    const rowsSortedDesc = entry.rows.slice().sort((a, b) => Number(b.user_id) - Number(a.user_id));
-    const latest = rowsSortedDesc[0];
-
-    if (isDeletedAgencyStatus(latest.agency_status)) {
-      out.push({ action: "delete", row: latest, phone: entry.phone });
-      continue;
-    }
-
-    const inAgencyRows = rowsSortedDesc.filter((x) => isInAgencyStatus(x.agency_status));
-
-    if (inAgencyRows.length > 0) {
-      out.push({ action: "sync", row: inAgencyRows[0], phone: entry.phone });
-      continue;
-    }
-
-    out.push({ action: "delete", row: latest, phone: entry.phone });
-  }
-
-  out.sort((a, b) => Number(a.row.user_id) - Number(b.row.user_id));
-  return out;
-}
-
-async function runSyncOnce() {
-  log("RUN start");
-
-  const token = envRequired("RESPOND_IO_TOKEN");
-  const limit = Number(envOptional("SYNC_LIMIT", "100000"));
-  const paceMs = Number(envOptional("RESPOND_IO_PER_CONTACT_PACE_MS", "900"));
-
-  const allTierTags = tierUniverse();
-
-  const rows = await fetchRows(limit);
-  const work = dedupeByPhone(rows);
-
-  let ok = 0;
-  let fail = 0;
-
-  for (const item of work) {
-    const r = item.row;
-    const userId = r.user_id;
-    const phone = item.phone;
-
-    try {
-      if (item.action === "delete") {
-        const del = await respondDeleteContact(token, phone);
-        const treatMissingOk = del.status === 400 || del.status === 404;
-
-        if (!del.ok && !treatMissingOk) {
-          throw new Error("Delete contact failed HTTP " + del.status + " " + del.text);
-        }
-
-        ok += 1;
-        log("OK delete", phone, "agency_status=" + normalizeText(r.agency_status));
-        await sleepMs(paceMs);
-        continue;
-      }
-
-      const tiktok = normalizeText(r.tiktok_username);
-      const realFirst = normalizeText(r.real_first_name);
-      const roleTag = normalizeText(r.role_tag);
-      const tierTag = normalizeText(r.tier_tag) || "Tier 1";
-      const lifecycle = normalizeText(r.fasttrack_tier);
-
-      const groupValue = extractInsideParens(normalizeText(r.group_raw));
-      const managerValue = emailLocalPart(normalizeText(r.manager_raw));
-
-      const diamondsMtdRaw = Number(r.diamonds_mtd);
-      const diamondsMtd = formatNumber(r.diamonds_mtd);
-
-      const validDaysMtd = formatNumber(r.valid_days_mtd);
-      const liveDurationMtd = hoursDecimalToHhMm(r.live_duration_mtd_hours);
-      const statsAsOf = toDayMonth(r.stats_as_of);
-
-      const prevTierRank = tierRankFromTierTag(tierTag);
-      const currentMonthTierRank = tierRankFromDiamonds(diamondsMtdRaw);
-      const tierStatus = tierStatusFromRanks(prevTierRank, currentMonthTierRank);
-
-      const firstName = tiktok ? tiktok : "user_" + String(userId);
-
-      const yDiamonds = formatNumber(r.yesterdays_diamonds_num);
-      const yDurationHours = Number(r.yesterdays_duration_hours_num);
-      const yDuration = hoursDecimalToHhMm(r.yesterdays_duration_hours_num);
-      const yValidDay = Number.isFinite(yDurationHours) && yDurationHours >= 1 ? "Yes" : "No";
-
-      const fasttrackTier = normalizeText(r.fasttrack_tier);
-      const movingTo = normalizeText(r.moving_to);
-
-      const cashValueText = r.cash_value === null || r.cash_value === undefined ? "" : formatCurrencyGBP(r.cash_value);
-      const lastMonthDiamonds = formatNumber(r.last_month_diamonds);
-
-      const battlePendingSummary = clamp255(r.battle_pending_summary);
-      const battleNextSummary = clamp255(r.battle_next_summary);
-      const trafficBoostSummary = clamp255(r.traffic_boost_summary);
-      const incentiveSummary = clamp255(r.incentive_summary);
-
-      const customFields = [
-        { name: "tiktok_username", value: tiktok || null },
-        { name: "real_first_name", value: realFirst || null },
-        { name: "group", value: groupValue || null },
-        { name: "manager", value: managerValue || null },
-        { name: "tier", value: tierTag || null },
-        { name: "tier_status", value: tierStatus },
-        { name: "diamonds_mtd", value: clamp255(diamondsMtd) },
-
-        { name: "cash_value", value: cashValueText ? clamp255(cashValueText) : null },
-        { name: "last_month_diamonds", value: clamp255(lastMonthDiamonds) },
-
-        { name: "valid_days_mtd", value: clamp255(validDaysMtd) },
-        { name: "live_duration_mtd", value: clamp255(liveDurationMtd) },
-
-        { name: "yesterdays_diamonds", value: clamp255(yDiamonds) },
-        { name: "yesterdays_duration", value: clamp255(yDuration) },
-        { name: "yesterday_valid_day", value: yValidDay },
-
-        { name: "fasttrack_tier", value: fasttrackTier || null },
-        { name: "moving_to", value: movingTo || null },
-
-        { name: "stats_as_of", value: statsAsOf ? clamp255(statsAsOf) : null },
-        { name: "agency_status", value: "in_agency" },
-
-        { name: "battle_pending_summary", value: battlePendingSummary || null },
-        { name: "battle_next_summary", value: battleNextSummary || null },
-        { name: "traffic_boost_summary", value: trafficBoostSummary || null },
-        { name: "incentive_summary", value: incentiveSummary || null }
-      ];
-
-      const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
-      if (!cu.ok) throw new Error("Create or update failed HTTP " + cu.status + " " + cu.text);
-
-      const roleLegacy = ["role_creator", "role_manager"];
-      const roleCanon = ["Creator", "Manager"];
-      const roleDelete = uniq(roleLegacy.concat(roleCanon));
-
-      const dr = await respondDeleteTags(token, phone, roleDelete);
-      if (!dr.ok) throw new Error("Delete role tags failed HTTP " + dr.status + " " + dr.text);
-
-      if (roleTag) {
-        const ar = await respondAddTags(token, phone, [roleTag]);
-        if (!ar.ok) throw new Error("Add role tag failed HTTP " + ar.status + " " + ar.text);
-      }
-
-      if (allTierTags.length > 0) {
-        const dt = await respondDeleteTags(token, phone, allTierTags);
-        if (!dt.ok) throw new Error("Delete tier tags failed HTTP " + dt.status + " " + dt.text);
-
-        if (tierTag) {
-          const at = await respondAddTags(token, phone, [tierTag]);
-          if (!at.ok) throw new Error("Add tier tag failed HTTP " + at.status + " " + at.text);
-        }
-      }
-
-      const lc = await respondUpdateLifecycle(token, phone, lifecycle);
-      if (!lc.ok) throw new Error("Update lifecycle failed HTTP " + lc.status + " " + lc.text);
-
-      ok += 1;
-      log(
-        "OK sync",
-        phone,
-        "tier=" + tierTag,
-        "tier_status=" + tierStatus,
-        "lifecycle=" + (lifecycle || ""),
-        "agency_status=" + normalizeText(r.agency_status)
-      );
-    } catch (e) {
-      fail += 1;
-      log("FAIL", "user_id=" + userId, "phone=" + phone, "err=" + String(e && e.message ? e.message : e));
-    }
-
-    await sleepMs(paceMs);
-  }
-
-  const summary = { phones: work.length, ok, fail };
-  log("RUN summary", JSON.stringify(summary));
-  log("RUN end");
-  return summary;
-}
-
-let isRunning = false;
-let lastRunAt = null;
-let lastSummary = null;
-
-function okJson(res, obj) {
-  res.status(200).json(obj);
+  log("SYNC COMPLETE");
 }
 
 const app = express();
-app.use(express.json({ limit: "256kb" }));
 
-app.get("/health", (req, res) => {
-  okJson(res, { ok: true, running: isRunning, lastRunAt, lastSummary });
+app.post("/run", async (req, res) => {
+  runSyncOnce();
+  res.json({ status: "started" });
 });
 
-app.post("/run", (req, res) => {
-  if (isRunning) return okJson(res, { status: "already_running", lastRunAt, lastSummary });
-
-  isRunning = true;
-  lastRunAt = nowIso();
-  okJson(res, { status: "started", startedAt: lastRunAt });
-
-  runSyncOnce()
-    .then((summary) => {
-      lastSummary = summary;
-    })
-    .catch((e) => {
-      lastSummary = { error: String(e && e.message ? e.message : e) };
-      log("RUN fatal", lastSummary.error);
-    })
-    .finally(() => {
-      isRunning = false;
-    });
-});
-
-app.all("*", (req, res) => {
-  res.status(404).json({ ok: false, error: "Not found" });
-});
-
-const port = Number(process.env.PORT || "8080");
-app.listen(port, () => {
-  log("Worker API listening", "port=" + port);
-});
+app.listen(process.env.PORT || 8080);
