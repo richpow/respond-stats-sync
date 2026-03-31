@@ -455,7 +455,6 @@ async function runSyncOnce() {
         { name: "yesterdays_diamonds", value: clamp255(yDiamonds) },
         { name: "yesterdays_duration", value: clamp255(yDuration) },
         { name: "yesterday_valid_day", value: yValidDay },
-        { name: "activity_status", value: activityStatus || null },
         { name: "fasttrack_tier", value: fasttrackTier || null },
         { name: "moving_to", value: movingTo || null },
         { name: "stats_as_of", value: statsAsOf ? clamp255(statsAsOf) : null },
