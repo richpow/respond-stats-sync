@@ -300,8 +300,10 @@ const pool = new Pool({
 
 async function fetchRows(limit) {
   const client = await pool.connect();
+
   try {
-    const res = await client.query(`
+    const res = await client.query(
+      `
       SELECT
         v.user_id,
         u.mobile AS mobile,
@@ -329,13 +331,25 @@ async function fetchRows(limit) {
         v.battle_pending_summary,
         v.battle_next_summary,
         v.traffic_boost_summary,
-        v.incentive_summary
+        v.incentive_summary,
+        CASE
+          WHEN fd.creator_id IS NULL THEN false
+          ELSE true
+        END AS in_latest_snapshot
       FROM public.v_respond_sync_users_plus_yesterday_plus_leagues v
       LEFT JOIN public.users u
         ON u.id = v.user_id
+      LEFT JOIN public.fasttrack_daily fd
+        ON fd.creator_id = u.creator_id
+       AND fd."Data period" = (
+            SELECT MAX("Data period")
+            FROM public.fasttrack_daily
+       )
       ORDER BY v.user_id
       LIMIT $1
-    `, [limit]);
+      `,
+      [limit]
+    );
 
     return res.rows;
   } finally {
@@ -348,24 +362,61 @@ function dedupeByPhone(rows) {
 
   for (const r of rows) {
     const phone = normalizePhoneE164(r.mobile || r.phone_e164);
-    if (!phone) continue;
+
+    if (!phone) {
+      continue;
+    }
 
     const current = byPhone.get(phone);
-    if (!current) byPhone.set(phone, { phone, rows: [r] });
-    else current.rows.push(r);
+
+    if (!current) {
+      byPhone.set(phone, {
+        phone,
+        rows: [r]
+      });
+    } else {
+      current.rows.push(r);
+    }
   }
 
   const out = [];
 
   for (const entry of byPhone.values()) {
-    const rowsSortedDesc = entry.rows.slice().sort((a, b) => Number(b.user_id) - Number(a.user_id));
+    const rowsSortedDesc = entry.rows
+      .slice()
+      .sort((a, b) => Number(b.user_id) - Number(a.user_id));
+
     const latest = rowsSortedDesc[0];
 
-    if (isDeletedAgencyStatus(latest.agency_status)) {
-      out.push({ action: "delete", row: latest, phone: entry.phone });
+    if (!latest.in_latest_snapshot) {
+      out.push({
+        action: "delete",
+        row: latest,
+        phone: entry.phone
+      });
       continue;
     }
 
+    if (isDeletedAgencyStatus(latest.agency_status)) {
+      out.push({
+        action: "delete",
+        row: latest,
+        phone: entry.phone
+      });
+      continue;
+    }
+
+    out.push({
+      action: "sync",
+      row: latest,
+      phone: entry.phone
+    });
+  }
+
+  out.sort((a, b) => Number(a.row.user_id) - Number(b.row.user_id));
+
+  return out;
+}
     const inAgencyRows = rowsSortedDesc.filter((x) => isInAgencyStatus(x.agency_status));
 
     if (inAgencyRows.length > 0) {
