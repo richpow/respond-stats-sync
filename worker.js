@@ -417,19 +417,7 @@ function dedupeByPhone(rows) {
 
   return out;
 }
-    const inAgencyRows = rowsSortedDesc.filter((x) => isInAgencyStatus(x.agency_status));
-
-    if (inAgencyRows.length > 0) {
-      out.push({ action: "sync", row: inAgencyRows[0], phone: entry.phone });
-      continue;
-    }
-
-    out.push({ action: "delete", row: latest, phone: entry.phone });
-  }
-
-  out.sort((a, b) => Number(a.row.user_id) - Number(b.row.user_id));
-  return out;
-}
+    
 
 async function runSyncOnce() {
   const token = envRequired("RESPOND_IO_TOKEN");
