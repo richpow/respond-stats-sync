@@ -305,12 +305,12 @@ async function fetchRows(limit) {
     const res = await client.query(
       `
       SELECT
-        v.user_id,
-        u.mobile AS mobile,
-        v.phone_e164,
-        v.tiktok_username,
-        v.real_first_name,
-        v.agency_status,
+        u.id AS user_id,
+u.mobile AS mobile,
+COALESCE(v.phone_e164, u.mobile) AS phone_e164,
+COALESCE(v.tiktok_username, u.tiktok_username) AS tiktok_username,
+v.real_first_name,
+u.agency_status,
         v.role_tag,
         v.group_raw,
         v.manager_raw,
@@ -336,15 +336,15 @@ async function fetchRows(limit) {
           WHEN fd.creator_id IS NULL THEN false
           ELSE true
         END AS in_latest_snapshot
-      FROM public.v_respond_sync_users_plus_yesterday_plus_leagues v
-      LEFT JOIN public.users u
-        ON u.id = v.user_id
-      LEFT JOIN public.fasttrack_daily fd
-        ON fd.creator_id = u.creator_id
-       AND fd."Data period" = (
-            SELECT MAX("Data period")
-            FROM public.fasttrack_daily
-       )
+      FROM public.users u
+LEFT JOIN public.v_respond_sync_users_plus_yesterday_plus_leagues v
+  ON v.user_id = u.id
+LEFT JOIN public.fasttrack_daily fd
+  ON fd.creator_id = u.creator_id
+ AND fd."Data period" = (
+      SELECT MAX("Data period")
+      FROM public.fasttrack_daily
+ )
       ORDER BY v.user_id
       LIMIT $1
       `,
