@@ -339,7 +339,7 @@ async function fetchRows(limit) {
       FROM public.v_respond_sync_users_plus_yesterday_plus_leagues v
       LEFT JOIN public.users u
         ON u.id = v.user_id
-      LEFT JOIN public.fasttrack_daily fd
+      INNER JOIN public.fasttrack_daily fd
         ON fd.creator_id = u.creator_id
        AND fd."Data period" = (
             SELECT MAX("Data period")
