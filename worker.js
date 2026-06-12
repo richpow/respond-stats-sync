@@ -345,7 +345,7 @@ LEFT JOIN public.fasttrack_daily fd
       SELECT MAX("Data period")
       FROM public.fasttrack_daily
  )
-      ORDER BY v.user_id
+      ORDER BY u.id
       LIMIT $1
       `,
       [limit]
