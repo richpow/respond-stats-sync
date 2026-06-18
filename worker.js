@@ -388,29 +388,19 @@ function dedupeByPhone(rows) {
 
     const latest = rowsSortedDesc[0];
 
-    if (!latest.in_latest_snapshot) {
-      out.push({
-        action: "delete",
-        row: latest,
-        phone: entry.phone
-      });
-      continue;
-    }
-
     if (isDeletedAgencyStatus(latest.agency_status)) {
-      out.push({
-        action: "delete",
-        row: latest,
-        phone: entry.phone
-      });
-      continue;
-    }
-
-    out.push({
-      action: "sync",
-      row: latest,
-      phone: entry.phone
-    });
+  out.push({
+    action: "delete",
+    row: latest,
+    phone: entry.phone
+  });
+} else {
+  out.push({
+    action: "sync",
+    row: latest,
+    phone: entry.phone
+  });
+}
   }
 
   out.sort((a, b) => Number(a.row.user_id) - Number(b.row.user_id));
