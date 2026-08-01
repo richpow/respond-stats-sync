@@ -302,6 +302,7 @@ async function fetchRows(limit) {
   const client = await pool.connect();
 
   try {
+    await client.query("SET statement_timeout = 0");
     const res = await client.query(
       `
       SELECT
