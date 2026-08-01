@@ -496,7 +496,7 @@ async function runSyncOnce() {
         { name: "battle_next_summary", value: battleNextSummary || null },
         { name: "traffic_boost_summary", value: trafficBoostSummary || null },
         { name: "incentive_summary", value: incentiveSummary || null },
-        { name: "followers", value: r.follower_count != null ? formatNumber(r.follower_count) : null }
+        { name: "followers", value: r.follower_count != null ? String(Math.trunc(Number(r.follower_count))) : null }
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
