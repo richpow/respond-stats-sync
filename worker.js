@@ -335,7 +335,8 @@ u.agency_status,
         CASE
           WHEN fd.creator_id IS NULL THEN false
           ELSE true
-        END AS in_latest_snapshot
+        END AS in_latest_snapshot,
+        cp.follower_count
       FROM public.users u
 LEFT JOIN public.v_respond_sync_users_plus_yesterday_plus_leagues v
   ON v.user_id = u.id
@@ -345,6 +346,8 @@ LEFT JOIN public.fasttrack_daily fd
       SELECT MAX("Data period")
       FROM public.fasttrack_daily
  )
+LEFT JOIN public.creator_profiles cp
+  ON LOWER(cp.username) = LOWER(u.tiktok_username)
       ORDER BY u.id
       LIMIT $1
       `,
@@ -491,7 +494,8 @@ async function runSyncOnce() {
         { name: "battle_pending_summary", value: battlePendingSummary || null },
         { name: "battle_next_summary", value: battleNextSummary || null },
         { name: "traffic_boost_summary", value: trafficBoostSummary || null },
-        { name: "incentive_summary", value: incentiveSummary || null }
+        { name: "incentive_summary", value: incentiveSummary || null },
+        { name: "followers", value: r.follower_count != null ? formatNumber(r.follower_count) : null }
       ];
 
       const cu = await respondCreateOrUpdate(token, phone, firstName, s(r.profile_pic_url), customFields);
